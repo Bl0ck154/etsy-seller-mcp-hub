@@ -1,6 +1,7 @@
 import { publicConfig } from './config.mjs';
 import { ETSY_MCP_TOOLS } from './mcp-tools.mjs';
 import { buildLowStockReport, summarizeUnshippedReceipts } from './seller-reports.mjs';
+import { resolveStagedImagePath } from './staged-image.mjs';
 
 export { ETSY_MCP_TOOLS } from './mcp-tools.mjs';
 export const MODERN_MCP_VERSION = '2026-07-28';
@@ -259,8 +260,11 @@ export class EtsyMcpAdapter {
       case 'etsy_image_get':
         return exposedResult(await this.hub.getImage(args.listing_id, args.image_id, { shop: shopAlias }));
       case 'etsy_image_upload':
-        if (!args.file && !args.listing_image_id) fail('INVALID_ARGUMENT', 'file or listing_image_id is required');
-        return exposedResult(await this.hub.uploadImageData(args.listing_id, fileArg(args.file), {
+        if ([args.file, args.file_path, args.listing_image_id].filter(value => value !== undefined && value !== null && value !== '').length !== 1) {
+          fail('INVALID_ARGUMENT', 'Provide exactly one of file, file_path, or listing_image_id');
+        }
+        return exposedResult(await this.hub.uploadImageData(args.listing_id,
+          args.file_path ? { path: await resolveStagedImagePath(args.file_path) } : fileArg(args.file), {
           shop: shopAlias,
           listingImageId: args.listing_image_id,
           rank: args.rank,
