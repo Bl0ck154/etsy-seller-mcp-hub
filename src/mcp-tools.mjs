@@ -181,10 +181,11 @@ export const ETSY_MCP_TOOLS = [
 
   tool('etsy_images_list', 'List listing images', 'Read all listing images and their ranks/metadata.', objectSchema({ listing_id: numericId('Etsy listing ID.'), shop: shopSchema }, ['listing_id'])),
   tool('etsy_image_get', 'Get listing image', 'Read one listing image by image ID.', objectSchema({ listing_id: numericId('Etsy listing ID.'), image_id: numericId('Listing image ID.'), shop: shopSchema }, ['listing_id', 'image_id'])),
-  tool('etsy_image_upload', 'Upload or assign listing image', 'Upload image bytes as base64/base64url or associate a previously uploaded/deleted image ID. Supports rank, overwrite, watermark flag and alt text.', objectSchema({
+  tool('etsy_image_upload', 'Upload or assign listing image', 'Upload base64 bytes, a server-staged image via file_path, or an existing Etsy image ID. file_path requires ETSY_MCP_UPLOAD_DIR. Supports rank, overwrite and alt text.', objectSchema({
     listing_id: numericId('Etsy listing ID.'),
     shop: shopSchema,
     file: uploadSchema,
+    file_path: { type: 'string', minLength: 1, maxLength: 4096, description: 'Absolute path to JPG, PNG or WebP already on MCP server under ETSY_MCP_UPLOAD_DIR (not ChatGPT /mnt/data). Mutually exclusive with file and listing_image_id.' },
     listing_image_id: numericId('Existing listing image ID to associate instead of uploading bytes.'),
     rank: { type: 'integer', minimum: 1, maximum: 20 },
     overwrite: { type: 'boolean' },

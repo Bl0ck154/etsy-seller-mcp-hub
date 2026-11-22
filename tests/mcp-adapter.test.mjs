@@ -124,7 +124,7 @@ test('generic multipart forwards base64 files without accepting server file path
 test('typed media upload requires bytes or an existing Etsy media id', async () => {
   const hub = { shop: () => ({ alias: 'main', shop_id: '23207964' }) };
   const adapter = new EtsyMcpAdapter(hub, config);
-  await assert.rejects(adapter.call('etsy_image_upload', { listing_id: '123' }), /file or listing_image_id is required/);
+  await assert.rejects(adapter.call('etsy_image_upload', { listing_id: '123' }), /exactly one of file, file_path, or listing_image_id/);
   await assert.rejects(adapter.call('etsy_video_upload', { listing_id: '123' }), /file or video_id is required/);
   await assert.rejects(adapter.call('etsy_file_upload', { listing_id: '123' }), /file or listing_file_id is required/);
 });
