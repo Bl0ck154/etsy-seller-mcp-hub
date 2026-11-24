@@ -190,9 +190,16 @@ const edgeTools = ETSY_MCP_TOOLS.map(tool => {
   const { file_path, ...properties } = tool.inputSchema.properties;
   return { ...tool, description: 'Upload base64 bytes or associate an existing Etsy image ID. Supports rank, overwrite and alt text.', inputSchema: { ...tool.inputSchema, properties } };
 });
+// Record only fixed diagnostic labels, never OAuth codes, tokens, state, IPs or passwords.
+async function oauthAudit(env, client, stage, status) {
+  const kind = client === 'https://claude.ai/oauth/mcp-oauth-client-metadata' ? 'Claude' : /^https:\/\/chatgpt\.com\/oauth\//.test(client || '') ? 'ChatGPT' : client ? 'other' : 'missing';
+  try {
+    await env.DB.prepare('INSERT INTO mcp_oauth_diagnostics(at,client_kind,stage,status) VALUES(?,?,?,?)').bind(now(),kind,stage,status).run();
+  } catch {}
+}
 async function oauth(req, env, url) {
   const origin = url.origin, resource = origin + '/mcp', path = url.pathname;
-  if (path === '/.well-known/oauth-protected-resource' || path === '/.well-known/oauth-protected-resource/mcp') return json({ resource, authorization_servers: [origin], scopes_supported: [scope] });
+  if (path === '/.well-known/oauth-protected-resource' || path === '/.well-known/oauth-protected-resource/mcp') return json({ resource, authorization_servers: [origin], scopes_supported: [scope], bearer_methods_supported: ['header'] });
   if (path === '/.well-known/oauth-authorization-server' || path === '/.well-known/openid-configuration') return json({ issuer: origin, authorization_endpoint: origin + '/oauth/authorize', token_endpoint: origin + '/oauth/token', response_types_supported: ['code'], grant_types_supported: ['authorization_code','refresh_token'], token_endpoint_auth_methods_supported: ['none'], code_challenge_methods_supported: ['S256'], scopes_supported: [scope], client_id_metadata_document_supported: true });
   if (path === '/oauth/authorize' && ['GET','POST'].includes(req.method)) {
     if (!env.MCP_OWNER_PASSWORD || env.MCP_OWNER_PASSWORD.length < 32) return json({ error: 'mcp_not_configured' }, 503);
@@ -221,30 +228,42 @@ async function oauth(req, env, url) {
     const code = random(32);
     await env.DB.prepare('INSERT INTO mcp_codes(code,client_id,redirect_uri,challenge,resource,expires) VALUES(?,?,?,?,?,?)').bind(await hash(code), client, target, challenge, resource, now()+300000).run();
     const targetUrl = new URL(target); targetUrl.searchParams.set('code',code); if(state) targetUrl.searchParams.set('state',state);
+    await oauthAudit(env,client,'code_issued',302);
     return redirect(targetUrl.toString());
   }
   if (path === '/oauth/token' && req.method === 'POST') {
     if (!env.MCP_SIGNING_KEY && !env.MCP_OWNER_PASSWORD) return json({ error: 'mcp_not_configured' }, 503);
     const q = new URLSearchParams(await req.text());
     const client = q.get('client_id') || '';
-    if (!client) return json({ error: 'invalid_client' }, 401);
+    const result = async (stage, value, status=200) => {
+      await oauthAudit(env,client,stage,status);
+      return json(value,status);
+    };
+    await oauthAudit(env,client,'token_received',0);
+    if (!client) return result('missing_client',{ error: 'invalid_client' },401);
     if (q.get('grant_type') === 'authorization_code') {
       const codeHash = await hash(q.get('code') || '');
       const verifier = q.get('code_verifier') || '';
-      if (!/^[A-Za-z0-9._~-]{43,128}$/.test(verifier)) return json({ error: 'invalid_grant' }, 400);
+      if (!/^[A-Za-z0-9._~-]{43,128}$/.test(verifier)) return result('invalid_verifier_format',{ error: 'invalid_grant' },400);
       const record = await env.DB.prepare('DELETE FROM mcp_codes WHERE code=? AND client_id=? AND redirect_uri=? AND challenge=? AND resource=? AND expires>? RETURNING code')
         .bind(codeHash, client, q.get('redirect_uri') || '', await hash(verifier), q.get('resource') || resource, now()).first();
-      if (!record || (q.get('resource') || resource) !== resource) return json({ error: 'invalid_grant' }, 400);
-      return json(await issue(env, client, resource));
+      if (!record || (q.get('resource') || resource) !== resource) {
+        // Boolean comparisons only: don't load or log any stored credential.
+        const check = await env.DB.prepare('SELECT client_id=? AS client_ok, redirect_uri=? AS redirect_ok, challenge=? AS pkce_ok, resource=? AS resource_ok, expires>? AS fresh FROM mcp_codes WHERE code=?')
+          .bind(client,q.get('redirect_uri') || '',await hash(verifier),q.get('resource') || resource,now(),codeHash).first();
+        const stage = !check ? 'code_missing_or_used' : !check.fresh ? 'code_expired' : !check.client_ok ? 'client_mismatch' : !check.redirect_ok ? 'redirect_mismatch' : !check.pkce_ok ? 'pkce_mismatch' : !check.resource_ok ? 'resource_mismatch' : 'invalid_grant';
+        return result(stage,{error:'invalid_grant'},400);
+      }
+      return result('code_exchanged',await issue(env, client, resource));
     }
     if (q.get('grant_type') === 'refresh_token') {
       const claims = await verify(env, q.get('refresh_token'), 'refresh', resource);
-      if (!claims || claims.client_id !== client) return json({ error: 'invalid_grant' }, 400);
+      if (!claims || claims.client_id !== client) return result('refresh_invalid',{ error: 'invalid_grant' },400);
       const record = await env.DB.prepare('DELETE FROM mcp_refresh WHERE jti=? AND client_id=? AND expires>? RETURNING jti').bind(await hash(claims.jti), client, now()).first();
-      if (!record) return json({ error: 'invalid_grant' }, 400);
-      return json(await issue(env, client, resource));
+      if (!record) return result('refresh_missing_or_used',{ error: 'invalid_grant' },400);
+      return result('refresh_exchanged',await issue(env, client, resource));
     }
-    return json({ error: 'unsupported_grant_type' }, 400);
+    return result('unsupported_grant_type',{ error: 'unsupported_grant_type' },400);
   }
   return null;
 }
@@ -364,7 +383,8 @@ export async function maintenance(env) {
     ['DELETE FROM mcp_codes WHERE expires<?',ts],
     ['DELETE FROM mcp_refresh WHERE expires<?',ts],
     ['DELETE FROM mcp_failures WHERE until<?',ts-86400000],
-    ['DELETE FROM hub_audit WHERE at<?',ts-90*86400000]
+    ['DELETE FROM hub_audit WHERE at<?',ts-90*86400000],
+    ['DELETE FROM mcp_oauth_diagnostics WHERE at<?',ts-7*86400000]
   ];
   for (const [sql,before] of rules) {
     const r=await env.DB.prepare(sql).bind(before).run();

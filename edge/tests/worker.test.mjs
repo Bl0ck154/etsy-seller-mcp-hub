@@ -106,7 +106,8 @@ test('scheduled housekeeping prunes only ephemeral OAuth/audit, not Etsy tokens 
   };
   const result=await maintenance(fake);
   assert.equal(result.ok,true);
-  assert.equal(deleted.length,5);
+  assert.equal(deleted.length,6);
+  assert.ok(deleted.some(s=>s.includes('mcp_oauth_diagnostics')));
   assert.ok(deleted.some(s=>s.includes('mcp_refresh')));
   assert.ok(deleted.some(s=>s.includes('hub_audit')));
   assert.equal(deleted.some(s=>s.includes('hub_tokens')),false);
@@ -272,6 +273,7 @@ test('ChatGPT and Claude can independently authorize, exchange and rotate grants
   const { readFileSync } = await import('node:fs');
   const db = new DatabaseSync(':memory:');
   db.exec(readFileSync(new URL('../migrations/0001_init.sql', import.meta.url),'utf8'));
+  db.exec(readFileSync(new URL('../migrations/0003_mcp_oauth_diagnostics.sql', import.meta.url),'utf8'));
   const dbAdapter={prepare(sql){return {bind(...args){return {
     first:async()=>db.prepare(sql).get(...args),
     run:async()=>({meta:{changes:Number(db.prepare(sql).run(...args).changes)}})
@@ -334,5 +336,11 @@ test('ChatGPT and Claude can independently authorize, exchange and rotate grants
     assert.equal(unauthenticated.status,401);
     const sse=await worker.fetch(req('/mcp',undefined,grants[0].grant.access_token),authEnv);
     assert.equal(sse.status,405);
+    const diagnostics=db.prepare('SELECT client_kind,stage,status FROM mcp_oauth_diagnostics').all();
+    assert.ok(diagnostics.some(x=>x.client_kind==='Claude'&&x.stage==='code_exchanged'&&x.status===200));
+    assert.ok(diagnostics.some(x=>x.client_kind==='Claude'&&x.stage==='token_received'));
+    assert.ok(diagnostics.some(x=>x.stage==='pkce_mismatch'));
+    assert.ok(diagnostics.some(x=>x.stage==='client_mismatch'));
+    assert.ok(!JSON.stringify(diagnostics).includes(verifier));
   }finally{globalThis.fetch=old;db.close();}
 });
