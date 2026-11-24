@@ -266,3 +266,73 @@ test('ChatGPT OAuth metadata fetch uses Cloudflare-supported manual redirects an
     assert.equal((await rejected.json()).error,'unauthorized_client');
   }finally{globalThis.fetch=old;}
 });
+
+test('ChatGPT and Claude can independently authorize, exchange and rotate grants despite legacy singleton lock', async()=>{
+  const { DatabaseSync } = await import('node:sqlite');
+  const { readFileSync } = await import('node:fs');
+  const db = new DatabaseSync(':memory:');
+  db.exec(readFileSync(new URL('../migrations/0001_init.sql', import.meta.url),'utf8'));
+  const dbAdapter={prepare(sql){return {bind(...args){return {
+    first:async()=>db.prepare(sql).get(...args),
+    run:async()=>({meta:{changes:Number(db.prepare(sql).run(...args).changes)}})
+  }}}}};
+  const clients=[
+    ['https://chatgpt.com/oauth/test-connector/client.json','https://chatgpt.com/connector/oauth/test-connector','ChatGPT'],
+    ['https://claude.ai/oauth/mcp-oauth-client-metadata','https://claude.ai/api/mcp/auth_callback','Claude']
+  ];
+  db.prepare('INSERT INTO mcp_lock(id,client_id,at) VALUES(1,?,?)').run(clients[0][0],Date.now());
+  const authEnv={...env,DB:dbAdapter,MCP_OWNER_PASSWORD:owner,ENABLE_WRITES:'true'};
+  const resource=url+'/mcp';
+  const verifier='z'.repeat(43);
+  const challenge=Buffer.from(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(verifier))).toString('base64url');
+  const grants=[];
+  const old=globalThis.fetch;
+  const post=(path,params)=>worker.fetch(new Request(url+path,{method:'POST',body:new URLSearchParams(params)}),authEnv);
+  try{
+    globalThis.fetch=async (target,options)=>{
+      const c=clients.find(c=>c[0]===target);
+      assert.ok(c);assert.equal(options.redirect,'manual');
+      return Response.json({client_id:c[0],client_name:c[2],redirect_uris:[c[1]],token_endpoint_auth_method:'none'});
+    };
+    for(const [client,callback] of clients){
+      const q={client_id:client,redirect_uri:callback,response_type:'code',code_challenge_method:'S256',code_challenge:challenge,resource,scope:'etsy',state:'test-state'};
+      const login=await worker.fetch(new Request(url+'/oauth/authorize?'+new URLSearchParams(q)),authEnv);
+      assert.equal(login.status,200);
+      const wrong=await post('/oauth/authorize',{...q,password:'wrong'});
+      assert.equal(wrong.status,401);
+      const consent=await post('/oauth/authorize',{...q,password:owner});
+      assert.equal(consent.status,302);
+      const redirect=new URL(consent.headers.get('location'));
+      assert.equal(redirect.searchParams.get('state'),'test-state');
+      const code=redirect.searchParams.get('code');
+      const params={grant_type:'authorization_code',client_id:client,redirect_uri:callback,code,code_verifier:verifier,resource};
+      const other=clients.find(c=>c[0]!==client)[0];
+      assert.equal((await post('/oauth/token',{...params,client_id:other})).status,400);
+      assert.equal((await post('/oauth/token',{...params,code_verifier:'x'.repeat(43)})).status,400);
+      const exchanged=await post('/oauth/token',params);
+      assert.equal(exchanged.status,200);
+      const grant=await exchanged.json();
+      assert.equal((await post('/oauth/token',params)).status,400);
+      const tools=await worker.fetch(req('/mcp',{jsonrpc:'2.0',id:7,method:'tools/list'},grant.access_token),authEnv);
+      assert.equal(tools.status,200);
+      const definitions=(await tools.json()).result.tools;
+      assert.ok(!definitions.find(t=>t.name==='etsy_image_upload').inputSchema.properties.file_path);
+      grants.push({client,grant});
+    }
+    for(const {client,grant} of grants){
+      const params={grant_type:'refresh_token',client_id:client,refresh_token:grant.refresh_token,resource};
+      const other=clients.find(c=>c[0]!==client)[0];
+      assert.equal((await post('/oauth/token',{...params,client_id:other})).status,400);
+      assert.equal((await post('/oauth/token',params)).status,200);
+      assert.equal((await post('/oauth/token',params)).status,400);
+    }
+    const evil=await worker.fetch(new Request(url+'/oauth/authorize?'+new URLSearchParams({client_id:clients[1][0],redirect_uri:'https://evil.example/callback',response_type:'code',code_challenge_method:'S256',code_challenge:challenge,resource,scope:'etsy'})),authEnv);
+    assert.equal(evil.status,400);
+    const notification=await worker.fetch(req('/mcp',{jsonrpc:'2.0',method:'notifications/initialized'},grants[0].grant.access_token),authEnv);
+    assert.equal(notification.status,202);
+    const unauthenticated=await worker.fetch(req('/mcp',undefined,''),authEnv);
+    assert.equal(unauthenticated.status,401);
+    const sse=await worker.fetch(req('/mcp',undefined,grants[0].grant.access_token),authEnv);
+    assert.equal(sse.status,405);
+  }finally{globalThis.fetch=old;db.close();}
+});

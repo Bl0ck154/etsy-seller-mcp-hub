@@ -1,167 +1,145 @@
-# Etsy API Hub
+<div align="center"><img src="assets/etsy-seller-mcp-hub.svg" alt="Etsy Seller MCP Hub for shop owners" width="100%"></div>
 
-Shared internal Etsy Open API v3 integration layer.
+# Etsy Seller MCP Hub
 
-The goal is to have one maintained Etsy core that can be used by:
+[![CI](https://github.com/Bl0ck154/etsy-seller-mcp-hub/actions/workflows/ci.yml/badge.svg)](https://github.com/Bl0ck154/etsy-seller-mcp-hub/actions/workflows/ci.yml)
+[![npm](https://img.shields.io/npm/v/etsy-seller-mcp-hub)](https://www.npmjs.com/package/etsy-seller-mcp-hub)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+[Official MCP Registry](https://registry.modelcontextprotocol.io/v0/servers?search=etsy-seller-mcp-hub)
+[![Glama score](https://glama.ai/mcp/servers/Bl0ck154/etsy-seller-mcp-hub/badges/score.svg)](https://glama.ai/mcp/servers/Bl0ck154/etsy-seller-mcp-hub)
 
-- server agents through `etsyctl`;
-- Order Forge and future services through a local HTTP API or direct JS import;
-- a future GPT Action adapter;
-- maintenance scripts and migrations.
+**Open-source MCP server for Etsy sellers.** Manage your own Etsy shop's listings, orders, inventory, personalization and media with AI assistants, scripts or local applications. Built on the Etsy Open API v3 with **79 MCP tools**, a CLI and a local HTTP gateway.
 
-`etsy-manager-pro` is a legacy consumer/reference only. New Etsy integration work belongs here.
+This is a **seller-side shop management toolkit**. It does not monitor consumer prices, search for buyer deals or automate shopping.
 
-## Why this exists
+**[Server-side image uploads](docs/FILE-PATH-UPLOADS.md)** · **[First-time setup](docs/QUICKSTART.md)** · [Security review](docs/SECURITY-REVIEW.md) · [Connector troubleshooting](docs/CONNECTORS.md) · [MCP configs](docs/MCP.md) · [Seller workflows demo](docs/DEMO.md) · [Existing API keys](docs/ACCESS.md) · [Hosting and privacy](docs/SECURITY-BOUNDARIES.md) · [Roadmap](docs/ROADMAP.md) · [Glama listing](https://glama.ai/mcp/servers/Bl0ck154/etsy-seller-mcp-hub) · [FAQ](docs/FAQ.md) · [Directories](docs/DIRECTORIES.md)
 
-Historically, several projects grew their own Etsy authentication, token refresh, endpoint wrappers and agent-specific restrictions. That creates drift and makes simple maintenance work require ad-hoc authenticated scripts.
+> The term 'Etsy' is a trademark of Etsy, Inc. This Application uses Etsy's API, but is not endorsed or certified by Etsy.
 
-Etsy API Hub separates the concerns:
+## What can sellers do?
 
-1. Core Etsy transport — credentials, OAuth refresh, 401 recovery, 429 handling and rate-limit metadata.
-2. Reusable Etsy operations — listing, personalization, inventory, orders, images and more.
-3. Full API escape hatch — any current/future Etsy `/v3/application/*` endpoint can be called without waiting for a wrapper.
-4. Interfaces — CLI today, local HTTP API today, future GPT/MCP/project adapters later.
+- Inspect active listings and inventory; review orders, transactions, shop data and shipping settings.
+- Update approved listings, inventory and personalization; upload product images, videos or files.
+- Use Etsy's current Open API v3 endpoints through 79 MCP tools, with advanced raw API operations when needed.
+- Run the same seller workflows from the `etsyctl` CLI, local HTTP API or compatible AI clients.
+
+Example prompts: “Which of my active listings have low stock?”, “Show paid but unshipped orders by ID”, “Review the personalization options for listing 123456789”, “Prepare these listing changes for my approval”.
+
+Seller-focused **read-only workflows**: `etsy_report_low_stock` (bounded inventory scan) and `etsy_report_unshipped` (minimized customer data). CLI equivalents: `etsyctl report low-stock` and `etsyctl report unshipped`.
+
+| Interface | Audience | Status |
+| --- | --- | --- |
+| Local MCP (stdio) | Claude Desktop, Cursor and other compatible clients | Available |
+| CLI / `etsyctl` | Scripts, seller automations and backend agents | Available |
+| Local HTTP / GPT Actions | Seller integrations | Available |
+| Remote MCP via HTTPS | Private, owner-only ChatGPT connector | Implemented, restricted |
+| One public server for many unrelated shops | Multi-tenant SaaS operators | **Not implemented** |
 
 ## Quick start
 
-Node.js 22+ is required. No npm dependencies are required.
+See the [step-by-step guide](docs/QUICKSTART.md) for Etsy authorization and operating system details.
 
-    cp config.example.json /etc/etsy-api-hub/config.json
-    export ETSY_HUB_CONFIG=/etc/etsy-api-hub/config.json
-    node bin/etsyctl.mjs shops
-    node bin/etsyctl.mjs listing get 123456789
+Requires **Node.js 22+** plus an approved Etsy Open API v3 app and authorized credentials.
 
-For a global command:
+### Install from npm
 
-    npm link
-    etsyctl shops
+Install the public package from [npm](https://www.npmjs.com/package/etsy-seller-mcp-hub):
 
-## Configuration
+~~~bash
+npm install -g etsy-seller-mcp-hub
+etsyctl init --shop-id 12345678    # replace with your actual shop ID
+etsyctl doctor                    # inspect local config, then enter your own credentials
+# Complete Etsy OAuth as documented in docs/QUICKSTART.md
+etsy-mcp
+~~~
 
-The config stores paths to credentials, not credentials themselves.
+The npm package is `etsy-seller-mcp-hub`. For first use, add `ETSY_MCP_READ_ONLY=1` in the MCP client config. The installed commands remain `etsy-mcp` (local MCP server) and `etsyctl` (CLI).
 
-Credential files must live outside git and should be mode `0600`. The Hub supports the existing Order Forge field names (`client_id`, `secret`, `access_token`, `refresh_token`) so migration can be incremental.
+### Run from source
 
-For transitional deployments, `etsyctl` can load an external token-store provider from `ETSY_HUB_TOKEN_PROVIDER_MODULE`. The module must export `createTokenStore({ shop, config, fetchImpl })` and may return a compatible token store or `null` to fall back to the configured credential file. This keeps migration adapters outside the public Hub core and avoids copying live rotating tokens between consumers.
+~~~bash
+git clone https://github.com/Bl0ck154/etsy-seller-mcp-hub.git
+cd etsy-seller-mcp-hub
+cp config.example.json /tmp/etsy-seller-config.json
+# Edit shop_id, credential paths, and local backup paths in the copied JSON.
+export ETSY_HUB_CONFIG=/tmp/etsy-seller-config.json
+node bin/etsyctl.mjs shops
+node bin/etsy-mcp.mjs
+~~~
 
-## CLI examples
+Configuration examples use Linux filesystem locations. Replace them with absolute paths for your computer; **never commit keys or tokens**. The `shops` command lists configured shop aliases, whereas live shop operations require OAuth. See [credentials.example.json](credentials.example.json) and [MCP client setup](docs/MCP.md).
 
-    etsyctl listing list active --limit 100
-    etsyctl listing get 1234567890
-    etsyctl listing update 1234567890 @/tmp/change.json
-    etsyctl personalization get 1234567890
-    etsyctl personalization set 1234567890 @/tmp/questions.json
-    etsyctl inventory get 1234567890
-    etsyctl orders list --limit 20 --paid true
-    etsyctl images list 1234567890
-    etsyctl images upload 1234567890 ./cover.jpg --rank 1 --alt "Custom family portrait"
+### CLI examples
 
-Current Etsy listing media limits: up to **20 images** and **2 listing videos** per listing. The old 10-image assumption is obsolete; ranks 11-20 are valid. Listing videos are 3-15 seconds and Etsy removes audio after upload.
+```bash
+etsyctl --help
+etsyctl doctor
+etsyctl report low-stock --threshold 3 --limit 10 --offset 0
+etsyctl report unshipped --limit 20 --offset 0
+```
 
-For an endpoint not wrapped yet:
+The seller reports are read-only and do not return buyer contact information in the paid/unshipped summary.
 
-    etsyctl request GET /application/shops/12345678/sections
+### Advanced CLI examples
 
-Friendly write commands snapshot the listing before mutation. Snapshot files contain listing, inventory and personalization data.
+~~~bash
+etsyctl listing list active --limit 100
+etsyctl listing get 1234567890
+etsyctl inventory get 1234567890
+etsyctl orders list --limit 20 --paid true
+etsyctl personalization get 1234567890
+etsyctl images list 1234567890
+etsyctl request GET /application/shops/12345678/sections
+~~~
 
-### Current Etsy schema compatibility
+## Will my old Etsy API key work?
 
-Friendly listing reads expose both `type` and `listing_type`. Etsy's live read payload currently uses `listing_type`, while parts of the public OpenAPI/write API still use `type`. The Hub normalizes this discrepancy and also exposes `is_digital`.
+**Yes, if it is an existing approved key for Etsy Open API v3 and you have the required OAuth authorization.** Etsy's July 2026 Seller App tier is an easier approval path for new shop owners. Etsy explicitly says that sellers who already hold a Personal Key are not eligible for that new tier because their current keys offer comparable access.
 
-Personalization writes are pre-validated before Etsy is called:
+MCP adds an interface for AI clients; it does not change Etsy's permissions. We do **not** operate a shared server that collects other sellers' Etsy tokens. Seller Apps are **own-shop only**. A developer operating one service for unrelated sellers needs suitable Etsy access (Personal App and potentially Commercial Access) and secure multi-tenant OAuth, which this repository does not currently implement. Each self-hosted user must configure their **own authorized credentials**.
 
-- 1-5 personalization questions per listing
-- `question_text`: 1-45 characters
-- `instructions`: maximum 120 characters
-- text input: `max_allowed_characters` 1-1024
-- at most one upload question; `max_allowed_files` 1-10
-- dropdowns: 1-30 unique options, labels 1-20 characters
-- labeled uploads: option count equals file count, labels 1-45 characters
-- add-on pricing is only valid on optional text inputs
+Read [Etsy API access: existing keys, Seller Apps and Commercial Access](docs/ACCESS.md).
 
-When editing an existing text question that already has an add-on price, the Hub preserves that price if `add_on_price` is omitted. Pass `0` or `null` explicitly to remove it.
+## Authentication and security
 
-Inventory writes opt into Etsy's current three-variation support with `max_variations_supported=3`.
+Etsy v3 requires a keystring and shared secret in the `x-api-key` header. Access to private seller data or write operations additionally requires OAuth 2.0 scopes. The hub supports OAuth PKCE, refresh, retries and rate limits. To authorize your shop:
 
+~~~bash
+etsyctl oauth start --shop main --redirect https://your-registered-callback.example/oauth/callback
+etsyctl oauth complete --state STATE --code CODE
+~~~
 
-## Internal HTTP API
+The hub verifies ownership of the configured shop after OAuth. Do not copy refresh tokens from other programs that rotate them.
 
-Start:
+For local HTTP:
 
-    node src/server.mjs
+~~~bash
+ETSY_HUB_CONFIG=/absolute/path/config.json node src/server.mjs
+~~~
 
-The server binds to `127.0.0.1` by default.
+The service binds to **127.0.0.1** by default and refuses external binds without an internal bearer token. For remote use, add authenticated TLS and appropriate access controls. Existing remote MCP OAuth supports a private, owner-approved ChatGPT client, not general third-party seller sign-in.
 
-Endpoints:
+The public self-hosted MCP exposes **79 tools in full mode**. Set `ETSY_MCP_READ_ONLY=1` to expose only 53 tools annotated read-only. To enable writes, remove the read-only variable, grant the necessary Etsy OAuth write scopes and reauthorize your own shop. [Full-access steps](docs/QUICKSTART.md#enable-full-shop-management-optional). This is an additional tool filter, not a substitute for Etsy OAuth permissions. Typed listing, inventory and media writes create backups where supported; **raw API writes have no automatic snapshots**. Confirm any live modification before giving an AI client write access.
 
-- `GET /health`
-- `GET /v1/shops`
-- `POST /v1/request`
+### Docker
 
-Example request body:
+~~~bash
+docker build -t etsy-seller-mcp-hub:local .
+docker run --rm --name etsy-seller-mcp-hub -p 127.0.0.1:3737:3737 -v /absolute/etsy-data:/data:rw -e ETSY_HUB_CONFIG=/data/config.json etsy-seller-mcp-hub:local
+~~~
 
-    {
-      "shop": "main",
-      "method": "GET",
-      "path": "/application/listings/1234567890",
-      "query": {"includes": "Images,Personalization"}
-    }
+Inside Docker, set `server.host` to `0.0.0.0` and configure a nonempty `server.auth_token_file`, otherwise startup will reject external binding. Expose the host port only on localhost or behind authenticated HTTPS. The Dockerfile runs as a non-root user.
 
-If `server.auth_token_file` is configured, all `/v1/*` endpoints require that bearer token. `/health` stays unauthenticated.
+## Development
 
-The HTTP JSON endpoint intentionally does not accept arbitrary local file paths. File uploads are handled by `etsyctl` or the JS API until a bounded multipart adapter is needed by a real consumer.
+~~~bash
+npm run check
+npm test
+npm pack --dry-run --ignore-scripts
+~~~
 
-## Full access without GPT-specific limits
+Tests use mocks and do not write to a live shop. See [Contributing](CONTRIBUTING.md), [Security](SECURITY.md) and the [MIT license](LICENSE).
 
-The core validates only transport-level safety:
+© 2026 Bl0ck154. Independent open-source software for authorized Etsy seller integrations.
 
-- requests must target Etsy `/v3/application/*`;
-- arbitrary hosts/full URLs are rejected;
-- HTTP method must be GET/POST/PUT/PATCH/DELETE;
-- credentials stay server-side.
-
-It does not impose the old GPT Action restrictions such as advanced edits only on draft listings. Etsy remains the authority on whether a particular endpoint/state combination is valid.
-
-## Token refresh
-
-Access tokens are refreshed through Etsy's OAuth refresh grant after a 401. Refresh is guarded by a file lock so parallel agents do not rotate the same token simultaneously. Updated credentials are written atomically with mode `0600`.
-
-## Rate limits
-
-429 responses are retried with bounded backoff. Successful response metadata includes Etsy rate-limit headers when available.
-
-## Migration plan
-
-1. Bootstrap Hub against currently valid credentials without changing live consumers.
-2. Use `etsyctl` for agent Etsy maintenance instead of ad-hoc scripts.
-3. Move credentials into Hub-owned protected storage.
-4. Point Order Forge and other services at Hub.
-5. If GPT Actions are needed again, build a thin adapter over Hub rather than maintaining a second Etsy implementation.
-6. Retire duplicate Etsy transport/auth code only after consumers are migrated and verified.
-
-
-## OAuth bootstrap
-
-The Hub can own its own Etsy OAuth token chain. Put only the static Etsy app keystring/shared secret into the shop credential file first, then start PKCE authorization:
-
-    etsyctl oauth start --shop main --redirect https://your-registered-callback.example/oauth/callback
-
-After Etsy redirects back with `code` and `state`:
-
-    etsyctl oauth complete --state <state> --code <code>
-
-The completion step verifies that the authorized Etsy account owns the configured `shop_id` before saving tokens.
-
-Do not copy a live refresh token from another active consumer merely to bootstrap the Hub. Etsy refresh responses return a new refresh token, so a token chain should have one credential owner. Either migrate that consumer deliberately, or authorize the Hub independently.
-
-## GPT Action adapter
-
-The built-in HTTP server exposes a thin adapter over the same Hub core:
-
-- `GET /gpt/openapi.json` — OpenAPI schema;
-- `POST /gpt/read` — GET-only Etsy reads;
-- `POST /gpt/write` — Etsy POST/PUT/PATCH/DELETE writes, marked consequential in the schema.
-
-Use API-key/Bearer authentication in the GPT Action configuration. The GPT never receives Etsy API credentials.
-
-The Action adapter is intentionally not a second Etsy implementation. It only translates Action requests into `EtsyHub.request()`. Media/file upload support for GPT conversation attachments should be added as a bounded adapter over the Hub upload primitives rather than by copying the legacy Etsy Manager Pro backend.
+Multipart media uploads are limited to 64 MiB of decoded files per request by default. Configure ETSY_HUB_MAX_UPLOAD_BYTES (bytes, maximum 192 MiB) for larger files. Local file-path multipart uploads now stream in 64 KiB chunks; base64 JSON uploads from remote MCP remain buffered and size-limited.

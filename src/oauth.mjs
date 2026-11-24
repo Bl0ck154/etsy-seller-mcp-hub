@@ -72,11 +72,7 @@ export async function beginOAuth({ config, shopAlias, redirectUri, scopes } = {}
 
   const { clientId } = await readCredentialShell(shop.credential_file);
   const requestedScopes = normalizeScopes(scopes || config.oauth_scopes || [
-    'listings_r', 'listings_w', 'listings_d',
-    'transactions_r', 'transactions_w',
-    'shops_r', 'shops_w',
-    'profile_r', 'profile_w',
-    'address_r', 'address_w', 'email_r',
+    'shops_r', 'listings_r', 'transactions_r',
   ]);
 
   const state = b64url(crypto.randomBytes(32));
@@ -135,7 +131,7 @@ async function exchangeCode({ clientId, secret, code, verifier, redirectUri, fet
   let data;
   try { data = text ? JSON.parse(text) : {}; } catch { data = { raw: text }; }
   if (!response.ok || !data?.access_token || !data?.refresh_token) {
-    throw new EtsyHubError(data?.error_description || data?.error || `Etsy OAuth exchange failed with HTTP ${response.status}`, {
+    throw new EtsyHubError(`Etsy OAuth exchange failed with HTTP ${response.status}`, {
       code: 'OAUTH_EXCHANGE_FAILED',
       status: response.status || 502,
       details: { status: response.status },
@@ -175,15 +171,33 @@ async function resolveAuthorizedShop({ accessToken, clientId, secret, fetchImpl 
 export async function completeOAuth({ config, state, code, fetchImpl = fetch } = {}) {
   if (!code) throw inputError('OAuth code is required', 'OAUTH_CODE_REQUIRED');
   const file = stateFile(config, state);
+  // O_EXCL works consistently on Linux, macOS and Windows; competing
+  // callbacks cannot both claim this state. Never reuse it after failure.
+  const claimFile = file + '.consuming';
+  let handle;
+  try {
+    handle = await fs.open(claimFile, 'wx', 0o600);
+  } catch (error) {
+    if (error?.code === 'ENOENT' || error?.code === 'EEXIST') {
+      throw inputError('OAuth state is missing or already used', 'OAUTH_STATE_NOT_FOUND');
+    }
+    throw error;
+  }
   let record;
   try {
     record = JSON.parse(await fs.readFile(file, 'utf8'));
   } catch (error) {
-    if (error?.code === 'ENOENT') throw inputError('OAuth state is missing or already used', 'OAUTH_STATE_NOT_FOUND');
+    if (error?.code === 'ENOENT') {
+      throw inputError('OAuth state is missing or already used', 'OAUTH_STATE_NOT_FOUND');
+    }
     throw error;
+  } finally {
+    // Delete the state before releasing the exclusive claim.
+    try { await fs.unlink(file); } catch {}
+    try { await handle.close(); } catch {}
+    try { await fs.unlink(claimFile); } catch {}
   }
   if (record.state !== state || Date.now() > Number(record.expires_at || 0)) {
-    try { await fs.unlink(file); } catch {}
     throw inputError('OAuth state expired or did not match', 'OAUTH_STATE_EXPIRED');
   }
 
@@ -232,8 +246,6 @@ export async function completeOAuth({ config, state, code, fetchImpl = fetch } =
     refreshed_at: new Date(now).toISOString(),
   };
   await atomicWriteJson(shop.credential_file, next);
-  try { await fs.unlink(file); } catch {}
-
   return {
     connected: true,
     shop: record.shop,

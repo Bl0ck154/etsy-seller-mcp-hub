@@ -185,6 +185,11 @@ async function authorized(req, env, resource) {
 }
 const MCP_READ_ONLY_TOOLS = new Set(["etsy_capabilities","etsy_shops","etsy_openapi_ping","etsy_shop_get","etsy_shop_search","etsy_shop_by_owner","etsy_listings_list","etsy_listing_get","etsy_listings_batch_get","etsy_listings_batch_inventory","etsy_listings_batch_shipping","etsy_listing_product_get","etsy_listing_offering_get","etsy_orders_list","etsy_order_get","etsy_transactions_list","etsy_transaction_get","etsy_reviews_list","etsy_payments_get","etsy_payment_by_receipt","etsy_ledger_entries","etsy_ledger_entry_get","etsy_payments_by_ledger_entries","etsy_personalization_get","etsy_inventory_get","etsy_images_list","etsy_image_get","etsy_videos_list","etsy_video_get","etsy_files_list","etsy_file_get","etsy_listing_properties_get","etsy_listing_translation_get","etsy_variation_images_get","etsy_shipping_profiles_list","etsy_shipping_profile_get","etsy_processing_profiles_list","etsy_processing_profile_get","etsy_return_policies_list","etsy_return_policy_get","etsy_sections_list","etsy_section_get","etsy_taxonomy_get","etsy_production_partners","etsy_holiday_preferences_list","etsy_shipping_carriers","etsy_user_me","etsy_user_get","etsy_user_addresses_list","etsy_user_address_get","etsy_request_read"]);
 const mcpWrite = name => !MCP_READ_ONLY_TOOLS.has(name);
+const edgeTools = ETSY_MCP_TOOLS.map(tool => {
+  if (tool.name !== 'etsy_image_upload') return tool;
+  const { file_path, ...properties } = tool.inputSchema.properties;
+  return { ...tool, description: 'Upload base64 bytes or associate an existing Etsy image ID. Supports rank, overwrite and alt text.', inputSchema: { ...tool.inputSchema, properties } };
+});
 async function oauth(req, env, url) {
   const origin = url.origin, resource = origin + '/mcp', path = url.pathname;
   if (path === '/.well-known/oauth-protected-resource' || path === '/.well-known/oauth-protected-resource/mcp') return json({ resource, authorization_servers: [origin], scopes_supported: [scope] });
@@ -195,11 +200,15 @@ async function oauth(req, env, url) {
     const client = q.get('client_id') || '', target = q.get('redirect_uri') || '', challenge = q.get('code_challenge') || '', state = q.get('state') || '';
     let c, r;
     try { c = new URL(client); r = new URL(target); } catch { return json({ error: 'invalid_client' }, 400); }
-    if (c.origin !== 'https://chatgpt.com' || !/^\/oauth\/[^/]+\/client\.json$/.test(c.pathname) || c.search || c.hash || r.origin !== 'https://chatgpt.com' || !r.pathname.startsWith('/connector/oauth/') || q.get('response_type') !== 'code' || q.get('code_challenge_method') !== 'S256' || q.get('resource') !== resource || challenge.length < 43 || (q.get('scope') || scope) !== scope) return json({ error: 'invalid_request' }, 400);
+    // Trust published client identities, not one permanently locked connector.
+    // Restrict metadata fetches to these official endpoints to prevent SSRF.
+    const chatgpt = c.origin === 'https://chatgpt.com' && /^\/oauth\/[^/]+\/client\.json$/.test(c.pathname) && r.origin === c.origin && r.pathname.startsWith('/connector/oauth/');
+    const claude = client === 'https://claude.ai/oauth/mcp-oauth-client-metadata' && target === 'https://claude.ai/api/mcp/auth_callback';
+    if ((!chatgpt && !claude) || c.username || c.password || c.search || c.hash || r.username || r.password || r.hash || q.get('response_type') !== 'code' || q.get('code_challenge_method') !== 'S256' || q.get('resource') !== resource || !/^[A-Za-z0-9_-]{43}$/.test(challenge) || (q.get('scope') || scope) !== scope) return json({ error: 'invalid_request' }, 400);
     // Workers fetch does not support redirect:'error'; manual rejects redirects without following them.
     const metaReq = await fetch(client, { signal: AbortSignal.timeout(5000), redirect: 'manual' }).catch(() => null);
     const meta = metaReq?.ok ? await metaReq.json().catch(() => null) : null;
-    if (!meta || meta.client_id !== client || meta.client_name !== 'ChatGPT' || !meta.redirect_uris?.includes(target)) return json({ error: 'unauthorized_client' }, 400);
+    if (!meta || meta.client_id !== client || !Array.isArray(meta.redirect_uris) || !meta.redirect_uris.includes(target) || (meta.token_endpoint_auth_method && meta.token_endpoint_auth_method !== 'none')) return json({ error: 'unauthorized_client' }, 400);
     if (req.method === 'GET') return html('<!doctype html><html><head><meta charset="utf-8"><title>Etsy Hub Owner Login</title></head><body><h2>Connect Etsy Hub</h2><form method="post"><input type="hidden" name="client_id" value="' + escapeAttr(client) + '"><input type="hidden" name="redirect_uri" value="' + escapeAttr(target) + '"><input type="hidden" name="code_challenge" value="' + challenge + '"><input type="hidden" name="code_challenge_method" value="S256"><input type="hidden" name="response_type" value="code"><input type="hidden" name="resource" value="' + resource + '"><input type="hidden" name="state" value="' + escapeAttr(state) + '"><label>Owner password <input type="password" name="password" autocomplete="current-password" required></label><button type="submit">Connect</button></form></body></html>');
     const ip = req.headers.get('cf-connecting-ip') || 'unknown';
     const attempts = await env.DB.prepare('SELECT count,until FROM mcp_failures WHERE ip=?').bind(ip).first();
@@ -209,11 +218,6 @@ async function oauth(req, env, url) {
       return html('<p>Incorrect password.</p>',401);
     }
     await env.DB.prepare('DELETE FROM mcp_failures WHERE ip=?').bind(ip).run();
-    const existing = await env.DB.prepare('SELECT client_id FROM mcp_lock WHERE id=1').first();
-    if (existing && existing.client_id !== client) return json({ error: 'unauthorized_client' }, 403);
-    if (!existing) await env.DB.prepare('INSERT OR IGNORE INTO mcp_lock (id,client_id,at) VALUES(1,?,?)').bind(client, now()).run();
-    const locked = await env.DB.prepare('SELECT client_id FROM mcp_lock WHERE id=1').first();
-    if (locked?.client_id !== client) return json({error:'unauthorized_client'},403);
     const code = random(32);
     await env.DB.prepare('INSERT INTO mcp_codes(code,client_id,redirect_uri,challenge,resource,expires) VALUES(?,?,?,?,?,?)').bind(await hash(code), client, target, challenge, resource, now()+300000).run();
     const targetUrl = new URL(target); targetUrl.searchParams.set('code',code); if(state) targetUrl.searchParams.set('state',state);
@@ -223,12 +227,14 @@ async function oauth(req, env, url) {
     if (!env.MCP_SIGNING_KEY && !env.MCP_OWNER_PASSWORD) return json({ error: 'mcp_not_configured' }, 503);
     const q = new URLSearchParams(await req.text());
     const client = q.get('client_id') || '';
-    const registered = await env.DB.prepare('SELECT client_id FROM mcp_lock WHERE id=1 AND client_id=?').bind(client).first();
-    if (!registered) return json({ error: 'invalid_client' }, 401);
+    if (!client) return json({ error: 'invalid_client' }, 401);
     if (q.get('grant_type') === 'authorization_code') {
       const codeHash = await hash(q.get('code') || '');
-      const record = await env.DB.prepare('DELETE FROM mcp_codes WHERE code=? RETURNING *').bind(codeHash).first();
-      if (!record || record.expires < now() || record.client_id !== client || record.redirect_uri !== q.get('redirect_uri') || record.resource !== (q.get('resource') || resource) || await hash(q.get('code_verifier') || '') !== record.challenge) return json({ error: 'invalid_grant' }, 400);
+      const verifier = q.get('code_verifier') || '';
+      if (!/^[A-Za-z0-9._~-]{43,128}$/.test(verifier)) return json({ error: 'invalid_grant' }, 400);
+      const record = await env.DB.prepare('DELETE FROM mcp_codes WHERE code=? AND client_id=? AND redirect_uri=? AND challenge=? AND resource=? AND expires>? RETURNING code')
+        .bind(codeHash, client, q.get('redirect_uri') || '', await hash(verifier), q.get('resource') || resource, now()).first();
+      if (!record || (q.get('resource') || resource) !== resource) return json({ error: 'invalid_grant' }, 400);
       return json(await issue(env, client, resource));
     }
     if (q.get('grant_type') === 'refresh_token') {
@@ -396,19 +402,22 @@ export default {
       if (path === '/admin/oauth/callback' && req.method === 'GET') return etsyCallback(env,url);
       if (path === '/admin/connect') return etsyConnect(req,env,url);
       if (path.startsWith('/admin/')) return etsyAdmin(req,env,url);
-      if (path === '/mcp' && req.method === 'POST') {
+      if (path === '/mcp' && ['POST','GET','DELETE'].includes(req.method)) {
         if (!await authorized(req,env,origin+'/mcp')) return json({ error: 'oauth_required' },401,{ 'www-authenticate': 'Bearer resource_metadata="' + origin + '/.well-known/oauth-protected-resource"' });
+        if (req.method !== 'POST') return new Response(null, { status: 405, headers: { allow: 'POST' } });
         const body = await getBody(req), method = body.method, id = body.id ?? null;
         if (body.jsonrpc !== '2.0' || !method) return json({jsonrpc:'2.0',id,error:{code:-32600,message:'Invalid Request'}},400);
+        if (body.id === undefined && method.startsWith('notifications/')) return new Response(null, { status: 202 });
         const modern = req.headers.get('mcp-protocol-version') === '2026-07-28' || method === 'server/discover';
         const reply = value => json({jsonrpc:'2.0',id,result:modern?{resultType:'complete',...value}:value});
         if (method === 'server/discover') return reply({ supportedVersions:['2026-07-28'],capabilities:{tools:{}},_meta:{'io.modelcontextprotocol/serverInfo':{name:'etsy-shop-manager',version:'1.1.0'}},ttlMs:300000,cacheScope:'private'});
-        if (method === 'initialize') return reply({protocolVersion:'2025-06-18',capabilities:{tools:{}},serverInfo:{name:'etsy-shop-manager',version:'1.1.0'}});
+        if (method === 'initialize') return reply({protocolVersion:['2025-03-26','2025-06-18'].includes(body.params?.protocolVersion) ? body.params.protocolVersion : '2025-06-18',capabilities:{tools:{}},serverInfo:{name:'etsy-shop-manager',version:'1.1.0'}});
         if (method === 'ping') return reply({});
-        if (method === 'tools/list') return reply({tools:ETSY_MCP_TOOLS,ttlMs:300000,cacheScope:'private'});
+        if (method === 'tools/list') return reply({tools:edgeTools,ttlMs:300000,cacheScope:'private'});
         if (method === 'tools/call') {
           const name = body.params?.name || '', args = body.params?.arguments || {};
           if (!ETSY_MCP_TOOLS.some(tool => tool.name === name)) return json({jsonrpc:'2.0',id,error:{code:-32601,message:'Unknown tool'}},400);
+          if (name === 'etsy_image_upload' && args.file_path != null) return reply({content:[{type:'text',text:'Cloudflare supports base64 uploads or existing Etsy image IDs, not local file paths.'}],isError:true});
           if (mcpWrite(name) && env.ENABLE_WRITES !== 'true') return reply({content:[{type:'text',text:'Writes disabled during Cloudflare migration.'}],isError:true});
           try {
             const hub = new EdgeHub(env);

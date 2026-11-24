@@ -22,7 +22,7 @@ This Worker reuses the repository's `EtsyHub`, `EtsyClient`, `EtsyMcpAdapter`, `
 4. In Etsy's app configuration, register `https://etsy-api-hub-malinary.malinary-art.workers.dev/admin/oauth/callback` (or the chosen final host) as an exact OAuth redirect URI.
 5. Open `https://etsy-api-hub-malinary.malinary-art.workers.dev/admin/connect`, select the shop, enter the same owner password, and follow the Etsy OAuth screen. No cURL or additional admin token is needed. The callback verifies that the account owns the configured shop ID, stores encrypted credentials, and refuses to replace an existing chain.
 6. GET `/admin/status` with your owner password as a Bearer token, if diagnostics are necessary. Test `/health`, `/gpt/openapi.json`, and read-only MCP `tools/list`, `etsy_shops`, `etsy_listing_get` before enabling writes.
-7. Connect ChatGPT MCP to `https://etsy-api-hub-malinary.malinary-art.workers.dev/mcp` with OAuth; owner login is restricted to ChatGPT metadata client IDs. GPT Actions can import `/gpt/openapi.json`, but must use a **dedicated scoped service token** (not the owner password). ChatGPT MCP uses its separate password-protected OAuth flow.
+7. Connect ChatGPT MCP to `https://etsy-api-hub-malinary.malinary-art.workers.dev/mcp` with OAuth; owner login supports independent ChatGPT and Claude published metadata identities; both can be connected at once. GPT Actions can import `/gpt/openapi.json`, but must use a **dedicated scoped service token** (not the owner password). ChatGPT and Claude MCP use password-protected OAuth with independent client-bound grants.
 8. Only after a verified live read and a reviewed backup/rollback test, change `ENABLE_WRITES` to `true`, redeploy, and switch the existing ChatGPT connector. Do **not** give third-party projects the owner password.
 
 ## Service clients — no day-to-day token maintenance
@@ -36,11 +36,11 @@ Owner-only API routes (authenticate with `MCP_OWNER_PASSWORD` or optional indepe
 - `POST /v1/request` — service API with `{"shop":"main","method":"GET","path":"/application/shops/23207964/receipts"}`, plus supported body/query/form/files fields.
 - `POST /gpt/read` and `POST /gpt/write` — compatible GPT Actions requiring the dedicated client token.
 
-**Do not distribute the owner password as an API key to other projects.** ChatGPT MCP OAuth continues to have owner-level rights, with unknown/new MCP tools treated as writes until explicitly audited.
+**Do not distribute the owner password as an API key to other projects.** ChatGPT and Claude MCP OAuth have owner-level rights, with unknown/new MCP tools treated as writes until explicitly audited.
 
 The Worker has a daily Cloudflare Cron Trigger at **03:17 UTC** to prune expired MCP authorizations, failed-password counters, and audit entries older than 90 days. Etsy access tokens refresh on demand behind a D1 lease. Individual backend tokens have no short-lived expiration to rotate; revoke any token when a connected project is retired or compromised.
 
-All currently deployed integrations remain on VPS. Enrolling a backend in Cloudflare requires an explicit future cutover. No existing consumer automatically moves when this Worker is deployed.
+Local server integrations may still use the VPS; do not retire it without checking consumers. Enrolling a backend in Cloudflare requires an explicit future cutover. No existing consumer automatically moves when this Worker is deployed.
 
 ## Safety
 

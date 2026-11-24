@@ -1,10 +1,15 @@
 import { publicConfig } from './config.mjs';
 import { ETSY_MCP_TOOLS } from './mcp-tools.mjs';
+import { buildLowStockReport, summarizeUnshippedReceipts } from './seller-reports.mjs';
+import { resolveStagedImagePath } from './staged-image.mjs';
 
 export { ETSY_MCP_TOOLS } from './mcp-tools.mjs';
 export const MODERN_MCP_VERSION = '2026-07-28';
 const LEGACY_MCP_VERSION = '2025-06-18';
-const MAX_MCP_BODY = 192 * 1024 * 1024;
+const configuredMaxBody = Number(process.env.ETSY_MCP_MAX_BODY_BYTES);
+const MAX_MCP_BODY = Number.isFinite(configuredMaxBody) && configuredMaxBody >= 1024 * 1024
+  ? Math.min(configuredMaxBody, 192 * 1024 * 1024)
+  : 64 * 1024 * 1024;
 
 function sendJson(res, status, value) {
   const body = JSON.stringify(value);
@@ -130,6 +135,20 @@ export class EtsyMcpAdapter {
           configured_shops: publicConfig(this.config),
         };
 
+      case 'etsy_report_low_stock':
+        return buildLowStockReport(this.hub, {
+          shop: shopAlias, threshold: args.threshold === undefined ? 3 : Number(args.threshold),
+          limit: args.limit === undefined ? 10 : Number(args.limit),
+          offset: args.offset === undefined ? 0 : Number(args.offset)
+        });
+      case 'etsy_report_unshipped': {
+        const count = args.limit === undefined ? 20 : Number(args.limit);
+        const offset = args.offset === undefined ? 0 : Number(args.offset);
+        if (!Number.isInteger(count) || count < 1 || count > 100) throw new Error('limit must be 1-100');
+        if (!Number.isInteger(offset) || offset < 0 || offset > 1000000) throw new Error('offset must be 0-1000000');
+        const result = await this.hub.listReceipts({ shop: shopAlias, limit: count, offset, wasPaid: true, wasShipped: false });
+        return summarizeUnshippedReceipts(result, { shop: shopAlias, limit: count, offset });
+      }
       case 'etsy_shops':
         return publicConfig(this.config);
       case 'etsy_openapi_ping':
@@ -241,8 +260,11 @@ export class EtsyMcpAdapter {
       case 'etsy_image_get':
         return exposedResult(await this.hub.getImage(args.listing_id, args.image_id, { shop: shopAlias }));
       case 'etsy_image_upload':
-        if (!args.file && !args.listing_image_id) fail('INVALID_ARGUMENT', 'file or listing_image_id is required');
-        return exposedResult(await this.hub.uploadImageData(args.listing_id, fileArg(args.file), {
+        if ([args.file, args.file_path, args.listing_image_id].filter(value => value !== undefined && value !== null && value !== '').length !== 1) {
+          fail('INVALID_ARGUMENT', 'Provide exactly one of file, file_path, or listing_image_id');
+        }
+        return exposedResult(await this.hub.uploadImageData(args.listing_id,
+          args.file_path ? { path: await resolveStagedImagePath(args.file_path) } : fileArg(args.file), {
           shop: shopAlias,
           listingImageId: args.listing_image_id,
           rank: args.rank,

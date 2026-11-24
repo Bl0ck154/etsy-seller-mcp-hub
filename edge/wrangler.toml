@@ -12,7 +12,7 @@ migrations_dir = "migrations"
 
 [vars]
 SHOPS_JSON = '{ "main": {"shop_id":"23207964"}, "second": {"shop_id":"33448161"} }'
-ENABLE_WRITES = "false"
+ENABLE_WRITES = "true"
 
 [triggers]
 crons = ["17 3 * * *"]

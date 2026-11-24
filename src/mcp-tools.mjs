@@ -92,6 +92,12 @@ export const ETSY_MCP_TOOLS = [
     'Explain connector coverage. IMPORTANT: if a typed tool lacks a filter or endpoint, use etsy_request_read / etsy_request_write / etsy_request_multipart instead of claiming the Etsy connector cannot do it. The raw layer covers the full Etsy Open API /application/* surface.',
     objectSchema(),
   ),
+  tool('etsy_report_low_stock', 'Low-stock seller report',
+    'Read active listing inventory and flag enabled variants at or below a quantity threshold. Bounded to 1-25 listings; no Etsy writes.',
+    objectSchema({ shop: shopSchema, threshold: { type: 'integer', minimum: 0, maximum: 10000, default: 3 }, limit: { type: 'integer', minimum: 1, maximum: 25, default: 10 }, offset: { type: 'integer', minimum: 0, maximum: 1000000, default: 0 } })),
+  tool('etsy_report_unshipped', 'Paid but unshipped orders',
+    'Read paid and not-yet-shipped shop receipts for seller fulfillment review. Never marks orders shipped.',
+    objectSchema({ shop: shopSchema, limit: { type: 'integer', minimum: 1, maximum: 100, default: 20 }, offset: { type: 'integer', minimum: 0, maximum: 1000000, default: 0 } })),
   tool('etsy_shops', 'List Etsy shops', 'List configured Etsy Hub shop aliases and shop IDs. Never returns Etsy credentials.', objectSchema()),
   tool('etsy_openapi_ping', 'Ping Etsy Open API', 'Check connectivity from the configured Etsy application to Etsy Open API.', objectSchema({ shop: shopSchema })),
   tool('etsy_shop_get', 'Get shop', 'Read the configured Etsy shop resource.', objectSchema({ shop: shopSchema })),
@@ -175,10 +181,11 @@ export const ETSY_MCP_TOOLS = [
 
   tool('etsy_images_list', 'List listing images', 'Read all listing images and their ranks/metadata.', objectSchema({ listing_id: numericId('Etsy listing ID.'), shop: shopSchema }, ['listing_id'])),
   tool('etsy_image_get', 'Get listing image', 'Read one listing image by image ID.', objectSchema({ listing_id: numericId('Etsy listing ID.'), image_id: numericId('Listing image ID.'), shop: shopSchema }, ['listing_id', 'image_id'])),
-  tool('etsy_image_upload', 'Upload or assign listing image', 'Upload image bytes as base64/base64url or associate a previously uploaded/deleted image ID. Supports rank, overwrite, watermark flag and alt text.', objectSchema({
+  tool('etsy_image_upload', 'Upload or assign listing image', 'Upload base64 bytes, a server-staged image via file_path, or an existing Etsy image ID. file_path requires ETSY_MCP_UPLOAD_DIR. Supports rank, overwrite and alt text.', objectSchema({
     listing_id: numericId('Etsy listing ID.'),
     shop: shopSchema,
     file: uploadSchema,
+    file_path: { type: 'string', minLength: 1, maxLength: 4096, description: 'Absolute path to JPG, PNG or WebP already on MCP server under ETSY_MCP_UPLOAD_DIR (not ChatGPT /mnt/data). Mutually exclusive with file and listing_image_id.' },
     listing_image_id: numericId('Existing listing image ID to associate instead of uploading bytes.'),
     rank: { type: 'integer', minimum: 1, maximum: 20 },
     overwrite: { type: 'boolean' },
